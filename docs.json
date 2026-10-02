@@ -22,20 +22,27 @@
     "name": "Dashboard",
     "url": "https://phantone.fm/admin"
   },
-  "navigation": [
-    {
-      "group": "Overview",
-      "pages": ["introduction"]
-    },
-    {
-      "group": "iOS SDK",
-      "pages": [
-        "ios/quickstart",
-        "ios/integration",
-        "ios/api-reference",
-        "ios/network-contract",
-        "ios/data-privacy"
-      ]
-    }
-  ]
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Docs",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["introduction"]
+          },
+          {
+            "group": "iOS SDK",
+            "pages": [
+              "ios/quickstart",
+              "ios/integration",
+              "ios/api-reference",
+              "ios/network-contract",
+              "ios/data-privacy"
+            ]
+          }
+        ]
+      }
+    ]
+  }
 }
