@@ -10,10 +10,7 @@
   "colors": {
     "primary": "#F5A623",
     "light": "#F7C05C",
-    "dark": "#C98A10",
-    "background": {
-      "dark": "#0F0F0F"
-    }
+    "dark": "#C98A10"
   },
   "topbarLinks": [
     {
@@ -25,12 +22,6 @@
     "name": "Dashboard",
     "url": "https://phantone.fm/admin"
   },
-  "tabs": [
-    {
-      "name": "iOS SDK",
-      "url": "ios"
-    }
-  ],
   "navigation": [
     {
       "group": "Overview",
@@ -46,6 +37,5 @@
         "ios/data-privacy"
       ]
     }
-  ],
-  "footerSocials": {}
+  ]
 }
