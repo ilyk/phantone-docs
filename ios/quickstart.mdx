@@ -14,14 +14,15 @@ description: "Install PhantoneSDK and show your first detection in under 10 minu
 
 ## Step 1 — Install
 
-**Xcode:** File ▸ Add Package Dependencies… ▸ enter the package URL your Phantone contact gave you (or "Add Local…" and pick the unzipped `PhantoneSDK` folder) ▸ add the `PhantoneSDK` product to your app target.
+Unzip the `PhantoneSDK-ios-1.0.0.zip` your Phantone contact sent you. You'll get a `PhantoneSDK/` folder — place it next to your project.
+
+**Xcode:** File ▸ Add Package Dependencies… ▸ Add Local… ▸ select the `PhantoneSDK` folder ▸ add the `PhantoneSDK` product to your app target.
 
 **Package.swift:**
 
 ```swift
 dependencies: [
-    .package(url: "<PHANTONE_SDK_GIT_URL>", from: "1.0.0"),
-    // from a local zip: .package(path: "../PhantoneSDK"),
+    .package(path: "../PhantoneSDK"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: [
