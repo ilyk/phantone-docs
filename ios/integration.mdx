@@ -1,0 +1,327 @@
+---
+title: "Integration Guide"
+description: "Full lifecycle, audio session, location, governance, testing and troubleshooting for PhantoneSDK on iOS."
+---
+
+## How it works
+
+1. **Capture.** While listening, the SDK reads the microphone through `AVAudioEngine` at the hardware sample rate and converts it to 16 kHz mono. The last 12 seconds are kept in memory.
+2. **Decode.** Once per second the SDK runs a bundled neural decoder (ONNX Runtime) over that window. The watermark is a 21-bit campaign id protected by a 27-bit error-correcting code, spread over three consecutive seconds of audio. A codeword that does not verify is discarded; the decoder never guesses.
+3. **Resolve.** A verified watermark id (6 hex characters, e.g. `0154a8`) is sent to the Phantone platform with your API key, a pseudonymous device identifier and device context. The platform looks up the campaign, applies targeting and governance (frequency caps, cooldowns, quiet hours, schedules, geofences, opt-out) and returns either an **experience** to show or a **suppression** reason.
+4. **Present.** Your app receives a `PhantoneDetection`. Show the experience in your own UI or with the drop-in `PhantoneOfferView`, then report what the user did.
+
+Typical time from "audio starts playing" to a delivered experience is **10–25 seconds** with the source a few metres away at normal listening volume. The audio itself never leaves the device.
+
+---
+
+## Requirements
+
+- iOS 16.0 or later; iPhone only (`UIDeviceFamily` 1). iPad works technically but is not tuned.
+- Xcode 16 or later. The package manifest uses `swift-tools-version: 6.0` and compiles in Swift 5 language mode, so it can be used from both Swift 5 and Swift 6 apps.
+- Swift Package Manager. CocoaPods and Carthage are not supported.
+- The SDK depends on `onnxruntime-swift-package-manager` (Microsoft, MIT licence), which SwiftPM resolves automatically.
+- Real device for testing. The iOS Simulator builds and launches, but its microphone path does not carry the watermark band reliably.
+
+---
+
+## Installation
+
+### Swift Package Manager
+
+In Xcode: **File ▸ Add Package Dependencies…**, paste the package URL provided by Phantone, choose "Up to Next Major Version" from `1.0.0`, and add the `PhantoneSDK` library to your app target.
+
+From a zip: unzip to a folder next to your project, then **File ▸ Add Package Dependencies… ▸ Add Local…** and select the `PhantoneSDK` folder.
+
+**Package.swift:**
+```swift
+.package(url: "<PHANTONE_SDK_GIT_URL>", from: "1.0.0")
+```
+
+**Verify:** build the app once. The `PhantoneSDK_PhantoneSDK.bundle` resource bundle (model, calibration data, privacy manifest) is copied into your app automatically by SwiftPM.
+
+### Binary distribution
+
+An XCFramework build is planned for teams that cannot consume source packages. Contact your Phantone representative to ask about availability.
+
+---
+
+## App configuration
+
+### Info.plist
+
+| Key | Required | Notes |
+|---|---|---|
+| `NSMicrophoneUsageDescription` | **Yes** | Shown by iOS on the first `start()`. Without it the app crashes when the mic is requested. |
+| `NSLocationWhenInUseUsageDescription` | **Yes** | Required even with `location = .off`. The SDK links Core Location; App Store Connect reports ITMS-90683 without it. |
+| `UIBackgroundModes` → `audio` | No | Lets capture continue briefly when backgrounded. Apple guideline 2.5.4 does not permit indefinite background mic; treat the SDK as a foreground listener. |
+
+### App Store privacy
+
+The SDK ships its own `PrivacyInfo.xcprivacy`, which Xcode merges into your app's privacy report. Declare in App Store Connect:
+
+- **Device ID**: collected, linked to the user, not used for tracking (frequency capping, analytics).
+- **Precise Location**: only if you enable a location policy; linked, not tracking.
+- **Product Interaction**: collected, linked, not tracking.
+
+No required-reason APIs are used and no tracking domains are contacted. See [Data & Privacy](/ios/data-privacy).
+
+### App Tracking Transparency
+
+Not required. The SDK uses no IDFA/IDFV and does not link data across apps.
+
+---
+
+## Configuring the SDK
+
+Call `configure` once at launch. It validates the input and throws `PhantoneError.invalidConfiguration` for an empty key or a non-`https` URL.
+
+```swift
+import PhantoneSDK
+
+var config = PhantoneConfiguration(apiKey: "sm_…")
+config.environment = .production        // default
+config.location = .off                  // default
+config.audioSession = .managed          // default
+config.presenceHeartbeat = true         // default
+config.redetectInterval = 24 * 60 * 60  // default (seconds)
+config.logLevel = .warning              // default
+try Phantone.configure(config)
+```
+
+### The API key
+
+- Ask your Phantone contact to provision an `sdk`-scoped key. The key starts with `sm_`.
+- It identifies **your account**. Every detection is attributed to it, which is what makes your campaigns' reports and governance yours.
+- An `sdk`-scoped key can only resolve watermarks and post feedback — safe to ship in a binary. Never embed a key with `encode` or `*` scope.
+- Rotate from the dashboard at any time. A revoked key makes the SDK report `.unauthorized` and stop resolving; decoding continues.
+
+### Environments
+
+<Warning>
+  A campaign created on one environment does not exist on the other. The most common cause of "the SDK hears the track but nothing happens" is an app pointed at a different environment than the dashboard where the campaign was created.
+</Warning>
+
+| Case | Base URL |
+|---|---|
+| `.production` | `https://phantone-api.fly.dev` |
+| `.staging` | `https://phantone-api-dev.fly.dev` |
+| `.custom(URL)` | as given; must be `https://` |
+
+---
+
+## Listening lifecycle
+
+### When to listen
+
+Listening uses the microphone — it must be **foreground and user-visible**. Good moments: the screen where users watch or listen to content, an "unlock offers" feature the user turns on, a venue mode. Do not start listening silently on app launch.
+
+### Start and stop
+
+```swift
+Phantone.shared.delegate = self
+Phantone.shared.start()   // asks for mic permission if needed
+// …
+Phantone.shared.stop()    // releases the mic immediately
+```
+
+`start()` is a no-op while `.starting`, `.listening` or `.interrupted`. `stop()` is idempotent.
+
+### States
+
+| State | Meaning |
+|---|---|
+| `.idle` | Never started. |
+| `.starting` | Decoder loading / mic opening. |
+| `.listening` | Capturing and decoding. |
+| `.interrupted` | System took the audio session (phone call, Siri). Resumes automatically. |
+| `.stopped` | After `stop()` or a fatal error. |
+
+### Callbacks
+
+All callbacks run on the **main thread**. Use the delegate or closures (both fire when both are set):
+
+```swift
+protocol PhantoneDelegate: AnyObject {
+    func phantone(_ phantone: Phantone, didDetect detection: PhantoneDetection)       // required
+    func phantone(_ phantone: Phantone, didSuppress detection: PhantoneDetection)      // optional
+    func phantone(_ phantone: Phantone, didChangeState state: PhantoneListenerState)  // optional
+    func phantone(_ phantone: Phantone, didFailWith error: PhantoneError)             // optional
+}
+
+Phantone.shared.onDetection   = { detection in … }
+Phantone.shared.onSuppression = { detection in … }
+Phantone.shared.onStateChange = { state in … }
+Phantone.shared.onError       = { error in … }
+Phantone.shared.onDiagnostics = { diagnostics in … }   // ~1/s, for debug screens
+```
+
+### Errors
+
+| Error | Listening continues? | Action |
+|---|---|---|
+| `.notConfigured` | not started | Call `configure` first. |
+| `.microphonePermissionDenied` | not started | Offer a Settings deep link. |
+| `.audioSessionNotRecordable` | not started | `.hostManaged` policy and session is not `.record`/`.playAndRecord`. |
+| `.audioEngineFailed(_)` | **no** | Retry `start()` later. |
+| `.decoderUnavailable(_)` | **no** | Bundle is broken — check your build. |
+| `.unauthorized` | yes | Key is missing, revoked, or wrong scope. |
+| `.rateLimited` | yes | SDK backs off automatically. |
+| `.network(_)` | yes | Transient; retried next decode. |
+| `.server(_)` | yes | Retried later. |
+
+---
+
+## Handling detections
+
+### The detection object
+
+```swift
+struct PhantoneDetection: Identifiable {
+    let id: String                       // unique per event; use as sheet identity
+    let watermarkId: String              // 6-hex campaign id
+    let detectedAt: Date
+    let experience: PhantoneExperience?  // nil when suppressed
+    let impressionRef: String?           // feedback token; present on delivery
+    let suppression: PhantoneSuppression?
+    var isDelivered: Bool
+}
+```
+
+`didDetect` fires only for **delivered** detections (`experience != nil`). `didSuppress` fires when governance withheld the experience.
+
+### Showing it
+
+**Drop-in (SwiftUI):**
+```swift
+.sheet(item: $detection) { d in
+    PhantoneOfferView(detection: d, accentColor: .orange, brandName: "Acme")
+        .presentationDetents([.medium])
+}
+```
+
+**Drop-in (UIKit):**
+```swift
+present(PhantoneOfferViewController(detection: detection, accentColor: .orange, brandName: "Acme"),
+        animated: true)
+```
+
+The drop-in shows artwork, headline, body, an "Open" button (opens `ctaURL`, reports `.engaged`) and a "Close" button (reports `.dismissed`).
+
+**Custom UI rules:**
+1. Open `ctaURL` as given — it may be a Phantone click-tracking redirect; do not rewrite it.
+2. Report feedback (next section).
+
+---
+
+## Feedback and governance
+
+```swift
+Phantone.shared.report(.engaged, for: detection)
+Phantone.shared.report(.dismissed(.tooOften), for: detection)
+Phantone.shared.report(.optedOut(.notRelevant), for: detection)  // permanent, device-wide
+```
+
+Reasons: `.tooOften`, `.notRelevant`, `.notThisBrand`, `.inappropriate`.
+
+<Note>
+  `.optedOut` is permanent for this device in your app across all campaigns. Expose it as a real choice in your UI ("Don't show me these"). A user who reinstalls the app gets a fresh identity.
+</Note>
+
+---
+
+## Audio session
+
+### `.managed` (default)
+
+The SDK sets `AVAudioSession` to category `.playAndRecord`, mode `.measurement`, options `[.defaultToSpeaker, .allowBluetooth]`, activates on `start()` and deactivates on `stop()`. Effects:
+
+- Your own playback keeps working, but output goes to the built-in speaker unless headphones are connected.
+- Other apps' audio is interrupted (a mic-capable session is not mixable by default).
+
+### `.hostManaged`
+
+Choose this if your app already owns the audio session (music players, calls, voice features). Before `start()`, your session must be **active** with category `.record` or `.playAndRecord`.
+
+Guidance for a good capture under `.hostManaged`:
+
+- Prefer mode `.measurement` or `.default`; avoid `.voiceChat` / `.videoChat` (voice processing suppresses the watermark band).
+- Avoid Bluetooth HFP input — the watermark lives in 1–8 kHz.
+- Keep the built-in microphone as the input route when possible.
+
+---
+
+## Location (optional)
+
+Off by default.
+
+| Policy | Prompts? | Behaviour |
+|---|---|---|
+| `.off` | no | Nothing sent. Platform places by IP (city level). |
+| `.ifAuthorized` | no | Uses Core Location only if the app was already granted When-In-Use or Always. |
+| `.requestWhenInUse` | yes, on `start()` | Requests When-In-Use with your `NSLocationWhenInUseUsageDescription`. |
+
+---
+
+## Testing your integration
+
+### Get a test track
+
+1. In the Phantone dashboard, create a campaign and encode an audio file. Download the watermarked file.
+2. Make sure the campaign is **Live** and that your app is on the **same environment** as the dashboard.
+
+### Run
+
+1. Build to a real iPhone with your `sm_` key.
+2. Play the track from a laptop at normal volume, 0.5–3 m from the phone.
+3. Expect a delivered detection within 10–25 s. The first `start()` also loads the model (~1 s).
+
+### Iterate quickly
+
+- Set `redetectInterval` to a few seconds in debug builds, or call `resetDetectionCooldown()`.
+- Call `resetDeviceIdentity()` to appear as a new device (never in production).
+- Wire `onDiagnostics` to a debug label: `inputLevelDBFS` around −40 dBFS = mic capturing; `syncFrames` > 0 = watermarked frames; all three `slotVotes` non-zero = codeword assembling.
+- Watch the unified log: subsystem `fm.phantone.sdk`, `logLevel = .info` or `.debug`.
+
+### Pre-release checklist
+
+- [ ] `NSMicrophoneUsageDescription` and `NSLocationWhenInUseUsageDescription` present.
+- [ ] `configure` runs before any `start()`; key has scope `sdk`; environment is `.production`.
+- [ ] `start()` only from a user-visible feature; `stop()` when it goes away.
+- [ ] Feedback reported, or the drop-in view is used.
+- [ ] An opt-out control exists if you present experiences repeatedly.
+- [ ] Privacy answers in App Store Connect updated.
+- [ ] `redetectInterval` and `logLevel` are at production values; no `resetDeviceIdentity()` in release code.
+
+---
+
+## Performance
+
+- **CPU:** roughly 10–30 neural inferences per second on a background queue. Runs on the Apple Neural Engine when the self-test passes, otherwise CPU. UI thread is never blocked.
+- **Memory:** 60–120 MB while listening (model, ONNX Runtime arena, 12 s audio ring). Released except the loaded model on `stop()`.
+- **Battery:** comparable to a voice memo recording plus light compute. Tie listening to a screen or a user-controlled mode; do not listen for hours unattended.
+- **Binary size:** ~20 MB model bundle added to your uncompressed app; App Store download is thinned.
+
+---
+
+## Troubleshooting
+
+**Nothing is ever detected.**
+
+1. Is `state == .listening`? If `.stopped`, read the error callback.
+2. Does `onDiagnostics.inputLevelDBFS` move with the sound? If it stays near −80, the microphone is not capturing: check permission, `.hostManaged` category, or a Bluetooth input route.
+3. Does `syncFrames` stay 0 with a loud, clearly playing track? Wrong track (not encoded), or too far / too reverberant. Move closer and raise the volume.
+4. Does `lastWatermarkId` get set but no `didDetect` / `didSuppress`? The id is unknown to the platform — almost always an environment mismatch, or the campaign is still Draft.
+
+**`didSuppress` instead of `didDetect`.** Working as designed: governance withheld it (`suppression` says why, most often the daily cap). Use `resetDeviceIdentity()` during QA.
+
+**`.unauthorized`.** Key is wrong, revoked, or lacks `sdk` scope.
+
+**Playback changed when listening started.** That is the `.managed` audio session. Switch to `.hostManaged` and configure the session yourself.
+
+**Detections stop after a phone call.** They should resume automatically (`.interrupted` → `.listening`). If your app also handles `AVAudioSession.interruptionNotification` and deactivates the session, do so before the SDK resumes, or use `.hostManaged`.
+
+---
+
+## Versioning
+
+Semantic versioning. `1.x` keeps the public API source-compatible; additive changes in minor versions; removals only in a major version with deprecation warnings first. The decoder model and wire protocol may be updated within minor versions; older SDK versions keep working.

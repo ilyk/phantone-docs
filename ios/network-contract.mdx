@@ -1,0 +1,161 @@
+---
+title: "Network Contract"
+description: "Every HTTPS call PhantoneSDK makes — exact headers, bodies and responses — for your security review."
+---
+
+There are three endpoints. The SDK calls nothing else and opens no other connections.
+
+**Base URL:** `https://phantone-api.fly.dev` (production) or the configured environment.
+
+TLS only; the SDK refuses non-`https` base URLs at configuration time. Certificate pinning is scaffolded but disabled.
+
+## Headers on every request
+
+| Header | Value |
+|---|---|
+| `Content-Type` | `application/json` |
+| `Accept` | `application/json` |
+| `X-API-Key` | your `sm_…` key |
+| `X-Phantone-SDK` | `ios/<sdk version>` |
+| `User-Agent` | `PhantoneSDK/<version> (iOS <os>; <bundle id>/<app version>)` |
+
+Requests time out after 10 s. The SDK never retries a request itself; a later decode triggers a new one.
+
+---
+
+## `POST /resolve/air`
+
+Resolve a detected watermark id to a campaign experience.
+
+Sent once per verified watermark id, subject to the local cooldown (`redetectInterval`, default 24 h per id).
+
+### Request
+
+```json
+{
+  "airId": "0154a8",
+  "deviceHash": "3f9c…(32 hex)",
+  "clientEventId": "ios-sdk-0154a8-1727700000000-483920",
+  "ctx": {
+    "platform": "ios",
+    "source": "ios-sdk",
+    "sdkName": "phantone-ios",
+    "sdkVersion": "1.0.0",
+    "manufacturer": "Apple",
+    "brand": "Apple",
+    "device": "iPhone",
+    "model": "iPhone16,1",
+    "os": "iOS",
+    "osVersion": "17.5",
+    "appVersion": "3.2.0",
+    "appBuild": "412",
+    "package": "com.example.app",
+    "screenW": 1179,
+    "screenH": 2556,
+    "density": 3,
+    "darkMode": true,
+    "language": "en",
+    "country": "US",
+    "locale": "en_US",
+    "timezone": "America/New_York",
+    "tzOffsetMin": -240,
+    "ramTotalMb": 5798,
+    "lowPower": false,
+    "thermal": "nominal",
+    "clientTime": 1727700000000,
+    "latitude": 40.7128,
+    "longitude": -74.0060,
+    "city": "New York",
+    "region": "NY"
+  }
+}
+```
+
+`latitude` / `longitude` / `city` / `region` are present only under an opt-in location policy with a fix available.
+
+### Responses
+
+| Status | Body | SDK behaviour |
+|---|---|---|
+| `200` | `{ "found": true, "airId": "…", "experience": { … }, "impressionRef": "uuid" }` | `didDetect` with the experience. |
+| `200` | `{ "found": true, "airId": "…", "experience": null, "suppressed": "<reason code>" }` | `didSuppress`. |
+| `404` | `{ "found": false, "airId": "…" }` | Not a live campaign on this environment. Id not retried for 5 min. |
+| `401` / `403` | `{ "statusCode": 401, "error": "Unauthorized", "message": "…" }` | `.unauthorized`; 60 s backoff. |
+| `429` | rate limited (60 req/min/IP) | `.rateLimited`; 60 s backoff. |
+| other | | `.server(status)`; 60 s backoff. Transport failures → `.network`, 15 s backoff. |
+
+### `experience` object
+
+```json
+{
+  "campaignId": "8b7e2a1c-…",
+  "trigger": "offer",
+  "headline": "20% off today",
+  "body": "Show this at the counter.",
+  "ctaUrl": "https://phantone-api.fly.dev/r/…",
+  "imageUrl": "https://…/asset.jpg",
+  "configJson": { "offerTime": "30 minutes" },
+  "revision": 3,
+  "wentLiveAt": "2026-09-30T10:00:00.000Z",
+  "paused": false,
+  "campaignExpiresAt": null
+}
+```
+
+<Note>
+  `ctaUrl` may be a Phantone click-tracking redirect (`/r/…`). Open it as given — do not rewrite or extract the destination URL. Non-`https` values are dropped client-side.
+</Note>
+
+---
+
+## `POST /resolve/feedback`
+
+Report what the user did with a delivered experience.
+
+### Request
+
+```json
+{
+  "impressionRef": "uuid from the delivering resolve",
+  "action": "engaged",
+  "reason": "not_relevant",
+  "deviceHash": "3f9c…"
+}
+```
+
+`action`: `engaged` | `dismissed` | `opted_out`
+
+`reason` (optional): `too_often` | `not_relevant` | `not_this_brand` | `inappropriate`
+
+### Response
+
+Always `204 No Content` when accepted — the endpoint deliberately does not reveal whether an `impressionRef` exists. Feedback is honoured only when the ref was issued to this `deviceHash` within the last hour and the impression was actually delivered.
+
+`401`/`403` for a bad key, `429` when rate limited.
+
+---
+
+## `POST /resolve/heartbeat`
+
+Anonymous presence ping. Sent every 15 s while listening when `presenceHeartbeat` is `true`.
+
+### Request
+
+```json
+{ "sessionId": "<random UUID, new per start()>" }
+```
+
+### Response
+
+`204`. The platform keys presence by an IP-derived city for 30 s; no device identifier, campaign or precise location is involved. The response is ignored.
+
+---
+
+## What the platform stores
+
+- **Detection events:** campaign id, hashed device id (hashed again server-side with a secret salt), timestamp, delivery outcome and reason, whitelisted `ctx` fields with coordinates coarsened to ~1 km, IP truncated to a subnet, country/region/city, publisher (API key owner) and SDK version.
+- **Feedback events:** campaign id, hashed device id, action, reason.
+- **Opt-outs:** hashed device id (permanent).
+- **Transparency log:** a signed, non-personal impression credential and a Merkle-log leaf (campaign id, impression id, time, country, attestation tier) for auditable counting. No device identifier or city is written to the log.
+
+Full retention periods and data-subject handling: [Data & Privacy](/ios/data-privacy).

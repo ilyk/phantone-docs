@@ -1,0 +1,250 @@
+---
+title: "API Reference"
+description: "Every public class, method and type in PhantoneSDK for iOS."
+---
+
+All public entry points are listed here. Every callback is delivered on the **main thread**; call public methods from the main thread.
+
+---
+
+## `Phantone`
+
+`public final class Phantone`
+
+The listener singleton.
+
+### Static
+
+| Member | Description |
+|---|---|
+| `static let version: String` | SDK version, e.g. `"1.0.0"`. |
+| `static let shared: Phantone` | The singleton. |
+| `static func configure(_ configuration: PhantoneConfiguration) throws` | Validate and apply the configuration. Throws `PhantoneError.invalidConfiguration`. Call once at launch, before `start()`. Calling again replaces the configuration; stop listening first. |
+
+### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `configuration` | `PhantoneConfiguration?` | The active configuration. `nil` before `configure`. |
+| `isConfigured` | `Bool` | `configuration != nil`. |
+| `delegate` | `PhantoneDelegate?` (weak) | Receives detections and lifecycle events. |
+| `onDetection` | `(@MainActor (PhantoneDetection) -> Void)?` | Closure alternative to `didDetect`. |
+| `onSuppression` | `(@MainActor (PhantoneDetection) -> Void)?` | Closure alternative to `didSuppress`. |
+| `onStateChange` | `(@MainActor (PhantoneListenerState) -> Void)?` | Closure alternative to `didChangeState`. |
+| `onError` | `(@MainActor (PhantoneError) -> Void)?` | Closure alternative to `didFailWith`. |
+| `onDiagnostics` | `(@MainActor (PhantoneDiagnostics) -> Void)?` | Decoder telemetry ~once per second while listening. |
+| `state` | `PhantoneListenerState` | Current listener state. |
+| `microphonePermission` | `PhantonePermissionStatus` | Mirrors the system's record permission. |
+| `deviceHash` | `String` | 32-hex pseudonymous per-install identifier sent with detections. |
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `func requestMicrophonePermission(_ completion: @escaping (Bool) -> Void)` | Shows the system microphone prompt if never asked. Completion on main thread. |
+| `func start()` | Start listening. Requests mic permission when undetermined. No-op while `.starting`, `.listening` or `.interrupted`. |
+| `func stop()` | Stop listening and release the microphone. Idempotent. |
+| `func report(_ feedback: PhantoneFeedback, for detection: PhantoneDetection, completion: ((Result<Void, PhantoneError>) -> Void)? = nil)` | Report user feedback for a delivered detection. |
+| `func resetDetectionCooldown()` | Forget recently resolved watermarks (QA helper). |
+| `func resetDeviceIdentity()` | Mint a new install id; the platform sees a brand-new device. **Never call in production.** |
+
+---
+
+## `PhantoneConfiguration`
+
+`public struct PhantoneConfiguration: Sendable`
+
+| Member | Type | Default | Description |
+|---|---|---|---|
+| `init(apiKey:environment:)` | | | |
+| `apiKey` | `String` | required | Your `sm_…` SDK key. Trimmed on `configure`. |
+| `environment` | `PhantoneEnvironment` | `.production` | Backend to talk to. |
+| `location` | `PhantoneLocationPolicy` | `.off` | Whether/how location is attached to detections. |
+| `audioSession` | `PhantoneAudioSessionPolicy` | `.managed` | Who configures `AVAudioSession`. |
+| `presenceHeartbeat` | `Bool` | `true` | Anonymous 15 s "listening" ping for the live map. |
+| `redetectInterval` | `TimeInterval` | `86400` | Seconds before the same watermark resolves again on this device. |
+| `logLevel` | `PhantoneLogLevel` | `.warning` | Unified-logging verbosity (subsystem `fm.phantone.sdk`). |
+
+### `PhantoneEnvironment`
+
+| Case | Base URL |
+|---|---|
+| `.production` | `https://phantone-api.fly.dev` |
+| `.staging` | `https://phantone-api-dev.fly.dev` |
+| `.custom(URL)` | as given; must be `https://` |
+
+### `PhantoneLocationPolicy`
+
+`.off` · `.ifAuthorized` · `.requestWhenInUse`
+
+### `PhantoneAudioSessionPolicy`
+
+`.managed` · `.hostManaged`
+
+### `PhantoneLogLevel`
+
+`.off` · `.error` · `.warning` · `.info` · `.debug`
+
+---
+
+## `PhantoneDelegate`
+
+`@MainActor public protocol PhantoneDelegate: AnyObject`
+
+Main-actor isolated — `@MainActor` view models and view controllers conform directly under both Swift 5 and Swift 6.
+
+| Method | Default | Description |
+|---|---|---|
+| `func phantone(_:didDetect:)` | required | Delivered detection (`experience != nil`). |
+| `func phantone(_:didSuppress:)` | no-op | Watermark recognised; experience withheld by governance. |
+| `func phantone(_:didChangeState:)` | no-op | State transitions. |
+| `func phantone(_:didFailWith:)` | no-op | Errors; consult `state` for fatality. |
+
+---
+
+## `PhantoneDetection`
+
+`public struct PhantoneDetection: Identifiable`
+
+| Property | Type | Description |
+|---|---|---|
+| `id` | `String` | Unique per detection event (UUID string). Use as sheet identity. |
+| `watermarkId` | `String` | 6-hex watermark id decoded from the audio. |
+| `detectedAt` | `Date` | Device time of the decode. |
+| `experience` | `PhantoneExperience?` | Delivered content, or `nil` if suppressed. |
+| `impressionRef` | `String?` | Feedback capability token; present only on delivery. Valid ~1 hour. |
+| `suppression` | `PhantoneSuppression?` | Why nothing was delivered. |
+| `isDelivered` | `Bool` | `experience != nil`. |
+
+A public `init` is available for previews and tests.
+
+---
+
+## `PhantoneExperience`
+
+`public struct PhantoneExperience`
+
+| Property | Type | Description |
+|---|---|---|
+| `campaignId` | `String` | Campaign UUID. |
+| `trigger` | `String` | Experience type: `offer`, `deeplink`, `survey`, `content`, `loyalty`, … |
+| `headline` | `String` | |
+| `body` | `String` | |
+| `ctaURL` | `URL?` | `https://` only. May be a Phantone click-tracking redirect; open as given. |
+| `imageURL` | `URL?` | `https://` only. |
+| `config` | `[String: Any]` | Trigger-specific settings from the dashboard. Treat unknown keys as opaque. |
+| `revision` | `Int?` | Experience revision counter. |
+| `wentLiveAt` | `Date?` | When the campaign went live. |
+| `campaignExpiresAt` | `Date?` | Campaign hard end date, if any. |
+
+---
+
+## `PhantoneSuppression`
+
+`public enum PhantoneSuppression: Equatable, Sendable`
+
+| Case | Platform codes |
+|---|---|
+| `.frequencyCap` | `CAP_CAMPAIGN_DAILY`, `CAP_GLOBAL_DAILY` |
+| `.cooldown` | `COOLDOWN_ACTIVE` |
+| `.quietHours` | `QUIET_HOURS` |
+| `.duplicate` | `DEDUP_SAME_CAMPAIGN`, `DEDUP_SAME_ADVERTISER` |
+| `.campaignHalted` | `CIRCUIT_BREAKER`, `KILL_SWITCH` |
+| `.campaignPaused` | `paused` |
+| `.campaignEnded` | `campaign_ended`, `expired` |
+| `.outsideSchedule` | `out_of_schedule` |
+| `.outsideGeofence` | `out_of_geo` |
+| `.policy` | `SUPPRESSED` (undisclosed: opted-out device, policy unavailable) |
+| `.other(String)` | anything else |
+
+`var code: String` — the raw platform code.
+
+---
+
+## `PhantoneFeedback` and `PhantoneDismissReason`
+
+`public enum PhantoneFeedback: Equatable, Sendable`
+
+- `.engaged`
+- `.dismissed(PhantoneDismissReason? = nil)`
+- `.optedOut(PhantoneDismissReason? = nil)` — permanent, device-wide in this app
+
+`public enum PhantoneDismissReason: String, Sendable, CaseIterable`
+
+`.tooOften` · `.notRelevant` · `.notThisBrand` · `.inappropriate`
+
+---
+
+## `PhantoneListenerState`
+
+`public enum PhantoneListenerState: Equatable, Sendable`
+
+`.idle` · `.starting` · `.listening` · `.interrupted` · `.stopped`
+
+## `PhantonePermissionStatus`
+
+`public enum PhantonePermissionStatus: Equatable, Sendable`
+
+`.undetermined` · `.granted` · `.denied`
+
+## `PhantoneError`
+
+`public enum PhantoneError: Error, Equatable, Sendable, LocalizedError`
+
+`.notConfigured` · `.invalidConfiguration(String)` · `.microphonePermissionDenied` · `.audioSessionNotRecordable` · `.audioEngineFailed(String)` · `.decoderUnavailable(String)` · `.unauthorized` · `.rateLimited` · `.network(String)` · `.server(Int)` · `.feedbackUnavailable`
+
+`errorDescription` gives a readable message.
+
+---
+
+## `PhantoneDiagnostics`
+
+`public struct PhantoneDiagnostics: Sendable`
+
+Delivered ~once per second via `onDiagnostics`. For debug screens only.
+
+| Property | Type | Description |
+|---|---|---|
+| `inputLevel` | `Double` | RMS of the last second (0…1). |
+| `inputLevelDBFS` | `Double` | Same in dBFS. Around −40 dBFS = mic is capturing. |
+| `decoderBackend` | `String` | `"coreml"` or `"cpu"`. |
+| `lastWatermarkId` | `String?` | Id from the last decode attempt. |
+| `syncFrames` | `Int` | Frames with a strong sync match in the window. > 0 = watermarked frames arriving. |
+| `slotVotes` | `[Int]` | Votes per codeword slot (3 elements). All non-zero = codeword assembling. |
+| `slotErrors` | `[Int]` | Corrected bit errors per slot on the last decode. |
+| `updatedAt` | `Date` | |
+
+---
+
+## UI
+
+### `PhantoneOfferView`
+
+`public struct PhantoneOfferView: View`
+
+```swift
+init(
+    detection: PhantoneDetection,
+    accentColor: Color = <Phantone gold>,
+    brandName: String = "Phantone",
+    autoReportFeedback: Bool = true,
+    onDismiss: (() -> Void)? = nil
+)
+```
+
+Card with artwork, headline, body, "Open" (opens `ctaURL`, reports `.engaged`) and "Close" (reports `.dismissed`). Present in a `.sheet`.
+
+### `PhantoneOfferViewController`
+
+`public final class PhantoneOfferViewController: UIHostingController<PhantoneOfferView>`
+
+```swift
+init(
+    detection: PhantoneDetection,
+    accentColor: UIColor = <Phantone gold>,
+    brandName: String = "Phantone",
+    autoReportFeedback: Bool = true
+)
+```
+
+Configured as a medium-detent page sheet with a grabber. Use `present(_:animated:)`.

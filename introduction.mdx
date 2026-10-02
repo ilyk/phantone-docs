@@ -1,0 +1,53 @@
+---
+title: "Introduction"
+description: "Phantone lets your iOS app recognise inaudible audio watermarks and turn them into real-time experiences."
+---
+
+## What is Phantone?
+
+Phantone is a server-side platform that embeds invisible codes in audio — music, ads, broadcasts, in-venue sound — and resolves them into experiences (offers, deep links, surveys, loyalty rewards) that you configure in the dashboard.
+
+You license the SDK and embed it in your app. When a user is near the watermarked audio, the SDK detects the code, calls the platform, and delivers the experience to your UI.
+
+```
+mic ──▶ on-device decoder ──▶ watermark id ──▶ Phantone platform ──▶ experience ──▶ your UI
+```
+
+**Everything acoustic is on-device.** The microphone stream is decoded locally by a bundled neural model. Only the recovered 6-character watermark id is sent to the platform. Audio never leaves the phone.
+
+## How it fits into your app
+
+You call `start()` when your user enters a listening context (a screen, a venue mode, a content player). The SDK runs in the background on a dedicated queue, calling your delegate on the main thread when it finds something.
+
+```swift
+Phantone.shared.delegate = self
+Phantone.shared.start()
+
+func phantone(_ phantone: Phantone, didDetect detection: PhantoneDetection) {
+    present(PhantoneOfferViewController(detection: detection), animated: true)
+}
+```
+
+## Available SDKs
+
+| Platform | Version | Status |
+|---|---|---|
+| iOS | 1.0.0 | Available |
+| Android | — | Planned |
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="iOS Quickstart" icon="apple" href="/ios/quickstart">
+    Install the SDK and show your first detection in under 10 minutes.
+  </Card>
+  <Card title="Integration Guide" icon="book" href="/ios/integration">
+    Full lifecycle, audio session, location, governance and testing.
+  </Card>
+  <Card title="API Reference" icon="code" href="/ios/api-reference">
+    Every public class, method and type.
+  </Card>
+  <Card title="Network Contract" icon="shield" href="/ios/network-contract">
+    Exact HTTPS payloads for your security review.
+  </Card>
+</CardGroup>

@@ -1,0 +1,72 @@
+---
+title: "Data & Privacy"
+description: "What PhantoneSDK collects, how it is stored, and how to answer App Store privacy questions."
+---
+
+For privacy, legal and App Store review. Complements [Network Contract](/ios/network-contract), which lists exact payloads.
+
+## Principles
+
+- **Audio never leaves the device.** The microphone stream is decoded locally; only the recovered 6-character watermark id is transmitted.
+- **No cross-app identity.** The SDK uses no IDFA, IDFV or any identifier another app could match. Its per-install id is random, lives in the host app's Keychain (device-only, not backed up, not synced) and disappears when the app is deleted.
+- **Nothing runs without the host app.** Listening happens only between `start()` and `stop()`, in the foreground, after the user grants microphone access.
+- **Users can opt out** via the app (`.optedOut` feedback). The platform withholds every future experience from that device in that app.
+
+---
+
+## Data inventory
+
+| Data | Collected when | Linked to identity | Used for tracking | Purpose |
+|---|---|---|---|---|
+| Pseudonymous device id (`deviceHash`) | each detection, each feedback | Yes (device) | No | Frequency capping, opt-out, deduplication, analytics |
+| Watermark id / campaign id | each detection | with the above | No | Resolve the experience, reporting |
+| Device context (model, OS, locale, timezone, screen, dark mode, RAM, battery state, app version, SDK version) | each detection | with the above | No | Analytics, support, delivery gating |
+| Precise location (lat/lon, city, region) | each detection, **only** with location policy on + permission granted | Yes | No | Geofenced campaigns, analytics |
+| Coarse location from IP | each request | Yes (server-side estimate) | No | Analytics, quiet hours |
+| User feedback (engaged / dismissed / opted out + reason) | when the app calls `report` | Yes | No | Governance, circuit breaker, reporting |
+| Presence heartbeat (random session id) | every 15 s while listening | No | No | Live "listening now" map for the campaign owner |
+
+**Not collected:** audio, contacts, photos, advertising identifiers, account identifiers from the host app, precise location without opt-in, any data while not listening.
+
+---
+
+## Apple privacy manifest
+
+The SDK bundle contains `PrivacyInfo.xcprivacy`, which Xcode merges into your app's privacy report automatically.
+
+| Key | Value |
+|---|---|
+| `NSPrivacyTracking` | `false` — no tracking domains |
+| `NSPrivacyAccessedAPITypes` | empty — no required-reason APIs |
+| `NSPrivacyCollectedDataTypes` | Device ID, Precise Location (if enabled), Product Interaction — all linked, not tracking |
+
+When filling in App Store Connect's privacy questions for the Phantone feature, declare:
+
+- **Device ID**: collected, linked to the user, not used for tracking.
+- **Precise Location**: only if you enable a location policy; linked, not tracking.
+- **Product Interaction**: collected, linked, not tracking.
+
+---
+
+## Permissions
+
+| Permission | Required? | When requested |
+|---|---|---|
+| Microphone (`NSMicrophoneUsageDescription`) | **Yes** | On the first `start()`, or earlier via `requestMicrophonePermission`. |
+| Location When In Use (`NSLocationWhenInUseUsageDescription`) | Purpose string: **always**. Permission: only under `.requestWhenInUse`. | Purpose string must be present even with `.off` because the SDK links Core Location (Apple upload check ITMS-90683). |
+
+No Bluetooth, notifications or ATT prompt.
+
+---
+
+## Retention and rights
+
+Detection and feedback events are retained on the platform for a bounded window and then purged. Transparency-log entries (containing no device identifier or city) are kept for audit. Opt-out records are kept as long as needed to honour them.
+
+The applicable retention periods, data-subject request process and controller/processor allocation between Phantone and the app publisher are set out in the platform data policies and the licence agreement. Contact your Phantone representative for the current versions.
+
+---
+
+## Children's apps
+
+Do not enable location. Consider whether microphone-based features are appropriate for the audience; the SDK does not adjust behaviour by age.

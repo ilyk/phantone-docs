@@ -1,0 +1,146 @@
+---
+title: "Quickstart"
+description: "Install PhantoneSDK and show your first detection in under 10 minutes."
+---
+
+## Requirements
+
+| | |
+|---|---|
+| Minimum iOS | 16.0 |
+| Xcode | 16 or newer |
+| Devices | iPhone (arm64). Simulator builds but has no usable microphone. |
+| Package manager | Swift Package Manager |
+
+## Step 1 — Install
+
+**Xcode:** File ▸ Add Package Dependencies… ▸ enter the package URL your Phantone contact gave you (or "Add Local…" and pick the unzipped `PhantoneSDK` folder) ▸ add the `PhantoneSDK` product to your app target.
+
+**Package.swift:**
+
+```swift
+dependencies: [
+    .package(url: "<PHANTONE_SDK_GIT_URL>", from: "1.0.0"),
+    // from a local zip: .package(path: "../PhantoneSDK"),
+],
+targets: [
+    .target(name: "YourApp", dependencies: [
+        .product(name: "PhantoneSDK", package: "PhantoneSDK"),
+    ]),
+]
+```
+
+The SDK depends on `onnxruntime-swift-package-manager` (Microsoft, MIT licence), which SwiftPM resolves automatically. It adds roughly 20 MB (model bundle) to your app's uncompressed size; the App Store thins the download.
+
+## Step 2 — Add usage strings
+
+In your app target's `Info.plist`:
+
+```xml
+<key>NSMicrophoneUsageDescription</key>
+<string>Listens for inaudible audio codes in what is playing nearby to unlock offers.</string>
+
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>Lets nearby offers reach you. Optional.</string>
+```
+
+<Warning>
+  Both keys are required. `NSMicrophoneUsageDescription` is obvious. `NSLocationWhenInUseUsageDescription` is also required because the SDK links Core Location for its optional location policies — App Store Connect will reject the upload without it (ITMS-90683), even if you never enable location.
+</Warning>
+
+## Step 3 — Configure at launch
+
+Call `configure` once, early — in `application(_:didFinishLaunchingWithOptions:)` or your SwiftUI `App.init`:
+
+```swift
+import PhantoneSDK
+
+try Phantone.configure(PhantoneConfiguration(apiKey: "sm_…"))
+```
+
+Get your key from your Phantone contact (ask for an `sdk`-scoped key). It is safe to ship in the binary — an `sdk`-scoped key can only resolve watermarks and post feedback.
+
+## Step 4 — Listen
+
+<CodeGroup>
+
+```swift UIKit
+final class OffersViewController: UIViewController, PhantoneDelegate {
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        Phantone.shared.delegate = self
+        Phantone.shared.start()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        Phantone.shared.stop()
+    }
+
+    func phantone(_ phantone: Phantone, didDetect detection: PhantoneDetection) {
+        present(PhantoneOfferViewController(detection: detection), animated: true)
+    }
+}
+```
+
+```swift SwiftUI
+import PhantoneSDK
+
+@main
+struct MyApp: App {
+    init() {
+        try? Phantone.configure(PhantoneConfiguration(apiKey: "sm_…"))
+    }
+    var body: some Scene { WindowGroup { ContentView() } }
+}
+
+struct ContentView: View {
+    @State private var detection: PhantoneDetection?
+
+    var body: some View {
+        Button("Start listening") { Phantone.shared.start() }
+            .onAppear {
+                Phantone.shared.onDetection = { self.detection = $0 }
+            }
+            .sheet(item: $detection) { d in
+                PhantoneOfferView(detection: d, brandName: "Acme")
+                    .presentationDetents([.medium])
+            }
+    }
+}
+```
+
+</CodeGroup>
+
+## Step 5 — Report feedback
+
+The drop-in `PhantoneOfferView` / `PhantoneOfferViewController` does this automatically. With your own UI:
+
+```swift
+Phantone.shared.report(.engaged, for: detection)
+Phantone.shared.report(.dismissed(.notRelevant), for: detection)
+Phantone.shared.report(.optedOut(), for: detection)   // permanent, device-wide
+```
+
+Feedback drives frequency governance and the circuit breaker.
+
+---
+
+## Test it
+
+1. Create a campaign in the Phantone dashboard, encode an audio file, download the watermarked file.
+2. Build to a real iPhone. Play the track from a laptop 0.5–3 m away at normal volume.
+3. Expect a delivered detection within 10–25 seconds.
+
+For faster iteration during QA, call `Phantone.shared.resetDetectionCooldown()` to re-trigger the same track immediately, or `Phantone.shared.resetDeviceIdentity()` to appear as a new device (never in production code).
+
+<Note>
+  Wire `onDiagnostics` to a debug label to see what the decoder sees in real time: `inputLevelDBFS` (is the mic capturing?), `syncFrames` (are watermarked frames arriving?), `slotVotes` (is a codeword being assembled?). All three non-zero means detection is imminent.
+</Note>
+
+## Next steps
+
+- [Integration Guide](/ios/integration) — full lifecycle, audio session options, interruption handling, location, testing checklist
+- [API Reference](/ios/api-reference) — every public symbol
+- [Network Contract](/ios/network-contract) — for your security review
